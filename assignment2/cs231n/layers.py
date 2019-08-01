@@ -357,6 +357,7 @@ def batchnorm_backward_alt(dout, cache):
                 dxi += dout[k,:]*gamma*(-1/(N*sigma) - 1/(N*np.power(sigma,3))*(x[i,:] - mean)*(x[k,:] - mean)) 
     
         dx[i,:] = dxi
+        
 #     dx = (1. / (N * sigma)) * (N*dxhat - np.sum(dxhat, axis=0) - x_hat*np.sum(dxhat*x_hat, axis=0))
     
     ###########################################################################
@@ -442,7 +443,8 @@ def layernorm_backward(dout, cache):
     ###########################################################################
 
     x, x_hat, mean, gamma, var, eps = cache
-
+#     print(x.shape)
+#     print(dout.shape)
     dbeta = np.sum(dout, axis=0) 
     dgamma = np.sum(x_hat * dout, axis=0)
     
@@ -451,7 +453,7 @@ def layernorm_backward(dout, cache):
     sigma = np.sqrt(var + eps)
         
     dxhat = dout * gamma
-
+    print(dxhat.shape)
     N = x.shape[1]
     
     dbeta = np.sum(dout, axis=0) 
@@ -485,7 +487,6 @@ def layernorm_backward(dout, cache):
     #                             END OF YOUR CODE                            #
     ###########################################################################
     return dx, dgamma, dbeta
-
 
 def dropout_forward(x, dropout_param):
     """
@@ -883,8 +884,17 @@ def spatial_batchnorm_forward(x, gamma, beta, bn_param):
     - out: Output data, of shape (N, C, H, W)
     - cache: Values needed for the backward pass
     """
-    out, cache = None, None
+    out, cache = None, {}
+    
+    N,D,H,W = x.shape
+    
+    mode = bn_param['mode']
+    eps = bn_param.get('eps', 1e-5)
+    momentum = bn_param.get('momentum', 0.9)
 
+    running_mean = bn_param.get('running_mean', np.zeros(D, dtype=x.dtype))
+    running_var = bn_param.get('running_var', np.zeros(D, dtype=x.dtype))
+    
     ###########################################################################
     # TODO: Implement the forward pass for spatial batch normalization.       #
     #                                                                         #
@@ -892,7 +902,18 @@ def spatial_batchnorm_forward(x, gamma, beta, bn_param):
     # vanilla version of batch normalization you implemented above.           #
     # Your implementation should be very short; ours is less than five lines. #
     ###########################################################################
-    pass
+    out = np.zeros(x.shape)
+
+    for c in range(D):
+        bn_param_c = bn_param
+        z = x[:,c,:,:].reshape((x.shape[0], -1))
+        out_c, cache[c] = batchnorm_forward(z, gamma[c], beta[c], bn_param_c)
+        out[:,c,:,:] = out_c.reshape((x.shape[0],x.shape[2],x.shape[3]))
+            
+    
+    cache['x'] = x
+    cache['beta'] = beta
+    cache['gamma'] = gamma
     ###########################################################################
     #                             END OF YOUR CODE                            #
     ###########################################################################
@@ -915,6 +936,11 @@ def spatial_batchnorm_backward(dout, cache):
     """
     dx, dgamma, dbeta = None, None, None
 
+#     x, x_hat, mean, var, gamma, beta = cache 
+    x = cache['x']
+    beta = cache['beta']
+    gamma = cache['gamma']
+    
     ###########################################################################
     # TODO: Implement the backward pass for spatial batch normalization.      #
     #                                                                         #
@@ -922,7 +948,25 @@ def spatial_batchnorm_backward(dout, cache):
     # vanilla version of batch normalization you implemented above.           #
     # Your implementation should be very short; ours is less than five lines. #
     ###########################################################################
+    
     pass
+          
+    dx = np.zeros(x.shape)
+    dbeta = np.zeros(beta.shape)
+    dgamma = np.zeros(gamma.shape)
+    
+    N,D,H,W = x.shape
+
+    
+    for c in range(D):
+        dout_c = dout[:,c,:,:].reshape((x.shape[0], -1))
+        dx_c, dgamma_c, dbeta_c = batchnorm_backward_alt(dout_c, cache[c])
+        
+#         print(dbeta_c, dbeta)
+        dbeta[c] += np.sum(dbeta_c)
+        dgamma[c] += np.sum(dgamma_c)
+        dx[:,c,:,:] = dx_c.reshape((x.shape[0],x.shape[2],x.shape[3]))
+            
     ###########################################################################
     #                             END OF YOUR CODE                            #
     ###########################################################################
@@ -958,6 +1002,26 @@ def spatial_groupnorm_forward(x, gamma, beta, G, gn_param):
     # the bulk of the code is similar to both train-time batch normalization  #
     # and layer normalization!                                                # 
     ###########################################################################
+    
+    
+    N,C,H,W = x.shape
+   
+    group_length = C // G
+        
+    out = np.zeros(x.shape)    
+    
+    z = x.reshape((N*G,-1))
+       
+    mean = np.mean(z, axis=1)
+    var = np.var(z, axis=1)
+    sigma = np.sqrt(var + eps)
+
+    x_hat = (z - mean[:,None]) / sigma[:,None]
+    
+    out = x_hat.reshape((N,C,H,W)) * gamma + beta
+
+    cache = x, x_hat.T, mean, gamma, var, eps, G
+        
     pass
     ###########################################################################
     #                             END OF YOUR CODE                            #
@@ -979,12 +1043,88 @@ def spatial_groupnorm_backward(dout, cache):
     - dbeta: Gradient with respect to shift parameter, of shape (C,)
     """
     dx, dgamma, dbeta = None, None, None
-
+    
     ###########################################################################
     # TODO: Implement the backward pass for spatial group normalization.      #
     # This will be extremely similar to the layer norm implementation.        #
     ###########################################################################
-    pass
+
+    x, x_hat, mean, gamma, var, eps, G = cache
+                
+    dx, dgamma, dbeta = layernorm_backward_alt(dout.reshape(x.shape), cache)
+        
+    ###########################################################################
+    #                             END OF YOUR CODE                            #
+    ###########################################################################
+    return dx, dgamma, dbeta
+
+def layernorm_backward_alt(dout, cache):
+    """
+    Backward pass for layer normalization.
+
+    For this implementation, you can heavily rely on the work you've done already
+    for batch normalization.
+
+    Inputs:
+    - dout: Upstream derivatives, of shape (N, D)
+    - cache: Variable of intermediates from layernorm_forward.
+
+    Returns a tuple of:
+    - dx: Gradient with respect to inputs x, of shape (N, D)
+    - dgamma: Gradient with respect to scale parameter gamma, of shape (D,)
+    - dbeta: Gradient with respect to shift parameter beta, of shape (D,)
+    """
+    dx, dgamma, dbeta = None, None, None
+    ###########################################################################
+    # TODO: Implement the backward pass for layer norm.                       #
+    #                                                                         #
+    # HINT: this can be done by slightly modifying your training-time         #
+    # implementation of batch normalization. The hints to the forward pass    #
+    # still apply!                                                            #
+    ###########################################################################
+
+    z, x_hat, mean, gamma, var, eps, G = cache
+
+    N,C,H,W = z.shape
+    x = z.reshape((N*G,-1))
+
+    
+    x_hat = x_hat.T
+ 
+    dbeta = np.sum(dout, axis=(0,2,3)).reshape((1,C,1,1))
+    
+    dout = dout.reshape(x.shape)
+
+    dgamma = np.sum((x_hat * dout).reshape(z.shape), axis=(0,2,3)).reshape((1,C,1,1))
+
+    sigma = np.sqrt(var + eps)
+        
+    N = x.shape[1]
+    
+    dgamma_x_hat = dout
+
+    dx_hat = (dout.reshape(z.shape) * gamma).reshape(x.shape)
+    
+    sqrtvar = np.sqrt(var + eps)
+    
+    dx_mean_1 = dx_hat.T * (1 / sqrtvar) 
+    divar = np.sum(dx_hat.T *(x.T - mean), axis=0)
+    
+    dsqrtvar = -1 / (np.square(sqrtvar)) * divar
+    
+    dvar = 0.5 * 1 / sqrtvar * dsqrtvar 
+    
+    dsq = np.ones(x.shape).T / N * dvar
+    
+    dx_mean_2 = 2 * (x.T - mean) * dsq
+    
+    dmean = -1 * np.sum(dx_mean_2 + dx_mean_1, axis=0)
+    dx1 = dx_mean_2 + dx_mean_1
+    
+    dx2 = np.ones(x.shape).T / N * dmean
+    
+    dx = (dx1 + dx2).T.reshape(z.shape)
+    
     ###########################################################################
     #                             END OF YOUR CODE                            #
     ###########################################################################
